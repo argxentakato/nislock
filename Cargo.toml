@@ -1,0 +1,8 @@
+[package]
+name = "nislock"
+version = "0.1.0"
+authors = ["Unuaviro F. Argxentakato <unuaviro@argxentakato.me>"]
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
