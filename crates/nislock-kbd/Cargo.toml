@@ -1,0 +1,12 @@
+[package]
+name = "nislock-kbd"
+description = "Controller-driven on-screen keyboard widget (backend-agnostic, reusable from SDDM/initrd backends)"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fontdue.workspace = true
+tiny-skia.workspace = true
+zeroize.workspace = true

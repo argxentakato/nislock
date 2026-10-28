@@ -1,0 +1,16 @@
+[package]
+name = "nislock"
+description = "ext-session-lock-v1 locker with a controller-driven on-screen keyboard"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+calloop = { workspace = true, features = ["signals"] }
+nislock-input.workspace = true
+nislock-kbd.workspace = true
+smithay-client-toolkit.workspace = true
+wayland-client.workspace = true
+zeroize.workspace = true
+pam.workspace = true
