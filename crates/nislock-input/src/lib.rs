@@ -13,7 +13,6 @@ pub mod error;
 
 use std::fs::File;
 use std::io::Read;
-use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -106,7 +105,7 @@ impl GamepadState {
 /// dedicated reader thread. Reports keep flowing while the node is open, and
 /// close/reopen by the kernel around us is survived with a bounded backoff.
 pub fn spawn_deck_reader(tx: Sender<Event>) -> Result<ReaderHandle, InputError> {
-    let path: PathBuf = find_deck_hidraw()?.ok_or(InputError::DeviceNotFound)?;
+    let path = find_deck_hidraw()?.ok_or(InputError::DeviceNotFound)?;
     let mut file = File::open(&path)?;
     std::thread::Builder::new()
         .name("nislock-gamepad".into())
@@ -125,30 +124,34 @@ pub fn spawn_deck_reader(tx: Sender<Event>) -> Result<ReaderHandle, InputError> 
                             }
                         }
                     }
-                    Ok(_) => continue, // short read: discard, alignment is per-read
+                    Ok(_) => {} // short read: discard, alignment is per-read
                     Err(e) => {
                         eprintln!("nislock-input: deck hidraw read failed ({e}); reopening");
                         state = GamepadState::default();
-                        file = {
-                            let mut delay = INITIAL_REOPEN_DELAY;
-                            loop {
-                                std::thread::sleep(delay);
-                                if let Some(f) = find_deck_hidraw()
-                                    .ok()
-                                    .flatten()
-                                    .and_then(|p| File::open(p).ok())
-                                {
-                                    break f;
-                                }
-                                delay = (delay * 2).min(MAX_REOPEN_DELAY);
-                            }
-                        };
+                        file = reopen_deck_hidraw();
                     }
                 }
             }
         })
         .map_err(InputError::Io)
         .map(|_| ReaderHandle)
+}
+
+/// Block until the Deck hidraw node can be opened again, backing off between
+/// attempts.
+fn reopen_deck_hidraw() -> File {
+    let mut delay = INITIAL_REOPEN_DELAY;
+    loop {
+        std::thread::sleep(delay);
+        if let Some(file) = find_deck_hidraw()
+            .ok()
+            .flatten()
+            .and_then(|path| File::open(path).ok())
+        {
+            return file;
+        }
+        delay = (delay * 2).min(MAX_REOPEN_DELAY);
+    }
 }
 
 /// Marker for the running reader thread; the thread (and its open hidraw fd)

@@ -89,15 +89,9 @@ pub fn make_report(buttons: u64, lthumb_x: i16, lthumb_y: i16) -> [u8; REPORT_LE
 
 /// Pure matcher for the contents of a sysfs hidraw `device/uevent` file.
 fn uevent_matches_deck(uevent: &[u8]) -> bool {
-    for line in uevent.split(|&c| c == b'\n') {
-        let line = line.trim_ascii();
-        if let Some(value) = line.strip_prefix(b"MODALIAS=")
-            && value == DECK_MODALIAS
-        {
-            return true;
-        }
-    }
-    false
+    uevent
+        .split(|&c| c == b'\n')
+        .any(|line| line.trim_ascii().strip_prefix(b"MODALIAS=") == Some(DECK_MODALIAS))
 }
 
 /// Find the `/dev/hidraw<N>` node of the Deck control interface, or `None`

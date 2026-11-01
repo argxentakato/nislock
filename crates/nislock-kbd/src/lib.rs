@@ -10,8 +10,11 @@ pub mod error;
 mod layout;
 mod render;
 
+use zeroize::Zeroizing;
+
 pub use error::KbdError;
 pub use layout::{Action, Key, Layer, default_layout};
+pub use render::{Frame, Renderer, Screen, StatusKind};
 
 /// A point in layout coordinate space (grid units before scaling).
 #[derive(Copy, Clone, Debug, Default)]
@@ -19,9 +22,6 @@ pub struct Point {
     pub x: f32,
     pub y: f32,
 }
-
-pub use render::{Frame, Renderer, Screen, StatusKind};
-use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
@@ -57,7 +57,6 @@ pub enum Event {
     TextInput(char),
 }
 
-#[derive(Debug)]
 pub enum Effect {
     Noop,
     Redraw,
@@ -65,6 +64,18 @@ pub enum Effect {
     Submit(Zeroizing<String>),
     /// The user requested cancel/unlock without authenticating.
     Cancel,
+}
+
+// Hand-written so `{:?}` can never print the password.
+impl std::fmt::Debug for Effect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Noop => f.write_str("Noop"),
+            Self::Redraw => f.write_str("Redraw"),
+            Self::Submit(_) => f.write_str("Submit(<redacted>)"),
+            Self::Cancel => f.write_str("Cancel"),
+        }
+    }
 }
 
 /// A key resolved to concrete pixel geometry for the current layout pass.
@@ -201,7 +212,7 @@ impl Keyboard {
         if self.buffer.is_empty() {
             return Effect::Noop;
         }
-        let pw = std::mem::replace(&mut self.buffer, Zeroizing::new(String::new()));
+        let pw = std::mem::take(&mut self.buffer);
         Effect::Submit(pw)
     }
 
@@ -224,9 +235,7 @@ impl Keyboard {
     fn pressed(&mut self, action: Action) -> Effect {
         if let Some(c) = self.char_for(action) {
             self.buffer.push(c);
-            if self.shift {
-                self.shift = false;
-            }
+            self.shift = false;
             return Effect::Redraw;
         }
         match action {

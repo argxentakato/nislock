@@ -5,13 +5,7 @@
 //!
 //! `cargo run -p nislock-snapshot -- [out.png] [--dump-scene]`
 
-use nislock_kbd::Dir;
-use nislock_kbd::Event;
-use nislock_kbd::Frame;
-use nislock_kbd::Keyboard;
-use nislock_kbd::Renderer;
-use nislock_kbd::Screen;
-use nislock_kbd::StatusKind;
+use nislock_kbd::{Dir, Event, Frame, Keyboard, Renderer, Screen, StatusKind};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,7 +48,7 @@ fn main() {
     println!("wrote {path}");
 
     if dump_scene {
-        for k in kb.scene().keys.iter() {
+        for k in &kb.scene().keys {
             println!(
                 "scene {:.1},{:.1} {:.1}x{:.1} {:?} label={:?}",
                 k.x, k.y, k.w, k.h, k.action, k.label

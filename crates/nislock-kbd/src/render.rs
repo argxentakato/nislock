@@ -11,11 +11,12 @@ use std::rc::Rc;
 
 use fontdue::{Font, FontSettings};
 use tiny_skia::{
-    BlendMode, Color, FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Transform,
+    BlendMode, Color, FillRule, FilterQuality, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
+    Transform,
 };
 
-use crate::Keyboard;
 use crate::error::KbdError;
+use crate::{Action, Keyboard};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/IBMPlexSans-Regular.ttf");
 
@@ -210,32 +211,21 @@ impl Renderer {
         pb.cubic_to(x, y + r - r * k, x + r - r * k, y, x + r, y);
         pb.close();
         let Some(path) = pb.finish() else { return };
-        let mut paint = Paint::default();
-        paint.set_color(fill);
-        paint.anti_alias = true;
-        pm.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            Transform::default(),
-            None,
-        );
+        Self::fill_path(pm, &path, fill);
     }
 
     fn fill_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, fill: Color) {
         let mut pb = PathBuilder::new();
         pb.push_circle(cx, cy, r);
         let Some(path) = pb.finish() else { return };
+        Self::fill_path(pm, &path, fill);
+    }
+
+    fn fill_path(pm: &mut Pixmap, path: &Path, fill: Color) {
         let mut paint = Paint::default();
         paint.set_color(fill);
         paint.anti_alias = true;
-        pm.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            Transform::default(),
-            None,
-        );
+        pm.fill_path(path, &paint, FillRule::Winding, Transform::default(), None);
     }
 
     /// Paint the whole screen (top band + keyboard) into `frame`.
@@ -271,7 +261,7 @@ impl Renderer {
             theme::label_dim(),
         );
 
-        let field = kb.buffer_text().chars().count();
+        let dots = kb.buffer_text().chars().count();
         let scene_field = kb.scene().field;
         if let Some((fx, fy, fw, fh)) = scene_field {
             Self::fill_round_rect(&mut pm, fx, fy, fw, fh, fh * 0.25, theme::field());
@@ -280,10 +270,9 @@ impl Renderer {
             let step = fh * 0.55;
             let cy = fy + fh / 2.0;
             let mut caret_x = fx + fh * 0.5 + dot_r;
-            for _ in 0..field {
-                let cx = caret_x;
-                Self::fill_circle(&mut pm, cx, cy, dot_r, theme::accent());
-                caret_x = cx + dot_r + step - dot_r;
+            for _ in 0..dots {
+                Self::fill_circle(&mut pm, caret_x, cy, dot_r, theme::accent());
+                caret_x += step;
             }
             Self::fill_round_rect(
                 &mut pm,
@@ -328,11 +317,10 @@ impl Renderer {
         for (i, k) in kb.scene().keys.iter().enumerate() {
             let focused = i == kb.focus_index();
             let base = match k.action {
-                crate::Action::Submit => theme::key_active(),
-                crate::Action::Cancel
-                | crate::Action::Backspace
-                | crate::Action::Layer(_)
-                | crate::Action::Shift => theme::key_alt(),
+                Action::Submit => theme::key_active(),
+                Action::Cancel | Action::Backspace | Action::Layer(_) | Action::Shift => {
+                    theme::key_alt()
+                }
                 _ => theme::key(),
             };
             let fill = if focused { theme::key_focus() } else { base };

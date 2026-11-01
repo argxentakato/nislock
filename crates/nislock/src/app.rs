@@ -10,20 +10,25 @@
 //! View (surfaces/painting), and the Model (screen state). The Wayland
 //! object bookkeeping itself lives in [`crate::view`].
 
+use std::collections::HashMap;
+use std::sync::mpsc;
 use std::time::Duration;
 
-use calloop::EventLoop;
 use calloop::channel::{self, Channel};
 use calloop::signals::{Signal, Signals};
+use calloop::{EventLoop, LoopHandle};
 use nislock_input::spawn_deck_reader;
 use nislock_kbd::{Event as KbdEvent, Keyboard};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_output, delegate_registry, delegate_session_lock, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_output, delegate_registry, delegate_seat,
+    delegate_session_lock, delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::calloop_wayland_source::WaylandSource,
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+    seat::{Capability, SeatHandler, SeatState},
     session_lock::{
         SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
         SessionLockSurfaceConfigure,
@@ -32,9 +37,11 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     Connection, Proxy, QueueHandle,
+    backend::ObjectId,
     globals::registry_queue_init,
-    protocol::{wl_buffer, wl_output, wl_surface},
+    protocol::{wl_buffer, wl_keyboard::WlKeyboard, wl_output, wl_seat, wl_surface},
 };
+use xkeysym::key;
 
 use crate::auth::PamAuthenticator;
 use crate::config::Config;
@@ -47,16 +54,28 @@ pub struct App {
     conn: Connection,
     compositor_state: CompositorState,
     output_state: OutputState,
+    seat_state: SeatState,
     registry_state: RegistryState,
     shm: Shm,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
+    loop_handle: LoopHandle<'static, App>,
+    /// Physical keyboards, keyed by seat object id; one per seat that offers
+    /// the keyboard capability.
+    keyboards: HashMap<ObjectId, SeatKeyboard>,
     views: Views,
     keyboard: Keyboard,
     model: LockModel,
     controller: LockController,
     dirty: bool,
     exit: Option<i32>,
+}
+
+/// A physical keyboard from one seat: the protocol object, plus which of our
+/// lock surfaces the compositor has given keyboard focus to.
+struct SeatKeyboard {
+    keyboard: WlKeyboard,
+    focused: Option<wl_surface::WlSurface>,
 }
 
 /// The event loop and its data live together; `run` destructures so the
@@ -89,7 +108,10 @@ impl Runtime<'_> {
 
 /// Connect, bind the globals we need, register every event source, request
 /// the session lock, and hand back the ready-to-run pair.
-pub fn bootstrap(config: &Config) -> Result<Runtime<'_>, NisError> {
+///
+/// The event loop lifetime is `'static` because the auto-repeat timer for
+/// physical keyboards holds a loop handle that lives as long as the app.
+pub fn bootstrap(config: &Config) -> Result<Runtime<'static>, NisError> {
     let conn = Connection::connect_to_env()?;
     let (globals, event_queue) = registry_queue_init(&conn)?;
     let qh: QueueHandle<App> = event_queue.handle();
@@ -108,13 +130,16 @@ pub fn bootstrap(config: &Config) -> Result<Runtime<'_>, NisError> {
 
     let compositor_state = CompositorState::bind(&globals, &qh).map_err(NisError::NoCompositor)?;
     let output_state = OutputState::new(&globals, &qh);
+    // Physical keyboards come from seats; the registry handler below also
+    // picks up seats/keyboards plugged in after startup.
+    let seat_state = SeatState::new(&globals, &qh);
     let registry_state = RegistryState::new(&globals);
     let shm = Shm::bind(&globals, &qh).map_err(NisError::NoShm)?;
     let session_lock_state = SessionLockState::new(&globals, &qh);
 
     // Deck gamepad: hidraw reader thread -> std mpsc -> calloop channel.
     // Opened before requesting the lock so a missing pad fails cleanly, not as a crashed locker.
-    let (pad_tx, pad_rx) = std::sync::mpsc::channel();
+    let (pad_tx, pad_rx) = mpsc::channel();
     let _pad = spawn_deck_reader(pad_tx)?;
     let (cal_tx, cal_rx): (channel::Sender<KbdEvent>, Channel<KbdEvent>) = channel::channel();
     std::thread::spawn(move || bridge_gamepad_events(pad_rx, cal_tx));
@@ -126,14 +151,18 @@ pub fn bootstrap(config: &Config) -> Result<Runtime<'_>, NisError> {
         })
         .map_err(|e| NisError::GamepadRegistration(e.error))?;
 
+    let loop_handle = event_loop.handle();
     let mut app = App {
         conn: conn.clone(),
         compositor_state,
         output_state,
+        seat_state,
         registry_state,
         shm,
         session_lock_state,
         session_lock: None,
+        loop_handle,
+        keyboards: HashMap::new(),
         views: Views::new(),
         keyboard: Keyboard::new(),
         model: LockModel::new(config.user.clone()),
@@ -170,6 +199,26 @@ impl App {
         }
     }
 
+    fn seat_keyboard(&self, keyboard: &WlKeyboard) -> Option<&SeatKeyboard> {
+        let id = keyboard.id();
+        self.keyboards.values().find(|sk| sk.keyboard.id() == id)
+    }
+
+    fn seat_keyboard_mut(&mut self, keyboard: &WlKeyboard) -> Option<&mut SeatKeyboard> {
+        let id = keyboard.id();
+        self.keyboards
+            .values_mut()
+            .find(|sk| sk.keyboard.id() == id)
+    }
+
+    /// Feed one physical key event (a press, or an auto-repeat from the
+    /// repeat timer) through the widget events for typing/editing keys.
+    fn handle_physical_key(&mut self, event: &KeyEvent, repeat: bool) {
+        for ev in physical_key_events(event, repeat) {
+            self.handle_kbd_event(ev);
+        }
+    }
+
     /// Send unlock (when still locked), flush it, then terminate.
     fn unlock_and_exit(&mut self, code: i32) {
         if let Some(lock) = self.session_lock.take()
@@ -184,15 +233,36 @@ impl App {
     }
 }
 
-fn bridge_gamepad_events(
-    rx: std::sync::mpsc::Receiver<KbdEvent>,
-    cal_tx: channel::Sender<KbdEvent>,
-) {
+fn bridge_gamepad_events(rx: mpsc::Receiver<KbdEvent>, cal_tx: channel::Sender<KbdEvent>) {
     while let Ok(ev) = rx.recv() {
         if cal_tx.send(ev).is_err() {
             break;
         }
     }
+}
+
+/// Translate one physical key event into zero or more widget events.
+/// Backspace/Delete edit the password field, Return submits, Escape clears;
+/// any other printable text becomes direct input. Auto-repeat keeps typing
+/// and deleting but never re-fires submit or cancel, so holding a key
+/// cannot re-run the auth policy repeatedly. Navigation, shift, and layer
+/// events are deliberately never produced: whatever is typed on a physical
+/// keyboard leaves the on-screen cursor position, shift state, and layer
+/// exactly where the gamepad left them.
+fn physical_key_events(event: &KeyEvent, repeat: bool) -> Vec<KbdEvent> {
+    match event.keysym.raw() {
+        key::BackSpace | key::Delete => return vec![KbdEvent::Backspace],
+        key::Return | key::KP_Enter if !repeat => return vec![KbdEvent::Submit],
+        key::Escape if !repeat => return vec![KbdEvent::Cancel],
+        _ => {}
+    }
+    event
+        .utf8
+        .iter()
+        .flat_map(|text| text.chars())
+        .filter(|c| *c == ' ' || !c.is_control())
+        .map(KbdEvent::TextInput)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -313,11 +383,142 @@ impl OutputHandler for App {
     }
 }
 
+impl SeatHandler for App {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability != Capability::Keyboard || self.keyboards.contains_key(&seat.id()) {
+            return;
+        }
+        // A keyboard failure never fails the lock itself: the gamepad path
+        // stays available, and a hot-plugged keyboard is picked up again on
+        // the next capability announcement.
+        let loop_handle = self.loop_handle.clone();
+        let repeat_callback = Box::new(|app: &mut App, _keyboard: &WlKeyboard, event: KeyEvent| {
+            app.handle_physical_key(&event, true);
+        });
+        match self.seat_state.get_keyboard_with_repeat(
+            qh,
+            &seat,
+            None,
+            loop_handle,
+            repeat_callback,
+        ) {
+            Ok(keyboard) => {
+                self.keyboards.insert(
+                    seat.id(),
+                    SeatKeyboard {
+                        keyboard,
+                        focused: None,
+                    },
+                );
+            }
+            Err(e) => eprintln!("nislock: keyboard on seat unavailable: {e}"),
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard {
+            self.keyboards.remove(&seat.id());
+        }
+    }
+
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.keyboards.remove(&seat.id());
+    }
+}
+
+impl KeyboardHandler for App {
+    #[allow(clippy::too_many_arguments)]
+    fn enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+        if let Some(sk) = self.seat_keyboard_mut(keyboard) {
+            sk.focused = Some(surface.clone());
+        }
+    }
+
+    fn leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+        if let Some(sk) = self.seat_keyboard_mut(keyboard) {
+            sk.focused = None;
+        }
+    }
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        keyboard: &WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        // Only keys typed while one of our lock surfaces has focus reach the
+        // auth path.
+        let focused = self
+            .seat_keyboard(keyboard)
+            .and_then(|sk| sk.focused.clone());
+        if focused.is_some_and(|surface| self.views.has_surface(&surface)) {
+            self.handle_physical_key(&event, false);
+        }
+    }
+
+    fn release_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &WlKeyboard,
+        _serial: u32,
+        _event: KeyEvent,
+    ) {
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &WlKeyboard,
+        _serial: u32,
+        _modifiers: Modifiers,
+        _layout: u32,
+    ) {
+    }
+}
+
 impl ProvidesRegistryState for App {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
-    registry_handlers![OutputState,];
+    registry_handlers![OutputState, SeatState,];
 }
 
 impl ShmHandler for App {
@@ -327,8 +528,86 @@ impl ShmHandler for App {
 }
 
 delegate_compositor!(App);
+delegate_keyboard!(App);
 delegate_output!(App);
 delegate_registry!(App);
+delegate_seat!(App);
 delegate_session_lock!(App);
 delegate_shm!(App);
 wayland_client::delegate_noop!(App: ignore wl_buffer::WlBuffer);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_event(keysym: u32, utf8: Option<&str>) -> KeyEvent {
+        KeyEvent {
+            time: 0,
+            raw_code: 0,
+            keysym: Keysym::new(keysym),
+            utf8: utf8.map(str::to_string),
+        }
+    }
+
+    fn typed(keysym: u32, text: &str) -> Vec<KbdEvent> {
+        physical_key_events(&key_event(keysym, Some(text)), false)
+    }
+
+    #[test]
+    fn printable_text_becomes_text_input_events() {
+        assert_eq!(typed(key::a, "a"), [KbdEvent::TextInput('a')]);
+        assert_eq!(typed(key::A, "A"), [KbdEvent::TextInput('A')]);
+        assert_eq!(typed(key::exclam, "!"), [KbdEvent::TextInput('!')]);
+        assert_eq!(typed(key::space, " "), [KbdEvent::TextInput(' ')]);
+        // Compose sequences can produce multi-byte text: keep every char.
+        assert_eq!(typed(key::ae, "æ"), [KbdEvent::TextInput('æ')]);
+    }
+
+    #[test]
+    fn control_characters_and_empty_text_produce_nothing() {
+        // A repeated Enter still carries the original "\r" utf8: control
+        // characters never reach the password field.
+        assert!(physical_key_events(&key_event(key::Return, Some("\r")), true).is_empty());
+        // Non-printable keysyms arrive with empty or None utf8.
+        assert!(physical_key_events(&key_event(key::NoSymbol, Some("")), false).is_empty());
+        assert!(physical_key_events(&key_event(key::F1, None), false).is_empty());
+    }
+
+    #[test]
+    fn editing_and_action_keysyms_map_to_widget_events() {
+        assert_eq!(
+            physical_key_events(&key_event(key::BackSpace, None), false),
+            [KbdEvent::Backspace]
+        );
+        assert_eq!(
+            physical_key_events(&key_event(key::Delete, None), false),
+            [KbdEvent::Backspace]
+        );
+        assert_eq!(
+            physical_key_events(&key_event(key::Return, Some("\r")), false),
+            [KbdEvent::Submit]
+        );
+        assert_eq!(
+            physical_key_events(&key_event(key::KP_Enter, Some("\r")), false),
+            [KbdEvent::Submit]
+        );
+        assert_eq!(
+            physical_key_events(&key_event(key::Escape, None), false),
+            [KbdEvent::Cancel]
+        );
+    }
+
+    #[test]
+    fn auto_repeat_types_and_deletes_but_never_submits_or_cancels() {
+        assert_eq!(
+            physical_key_events(&key_event(key::BackSpace, None), true),
+            [KbdEvent::Backspace]
+        );
+        assert_eq!(
+            physical_key_events(&key_event(key::a, Some("a")), true),
+            [KbdEvent::TextInput('a')]
+        );
+        assert!(physical_key_events(&key_event(key::Return, Some("\r")), true).is_empty());
+        assert!(physical_key_events(&key_event(key::Escape, None), true).is_empty());
+    }
+}

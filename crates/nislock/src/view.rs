@@ -11,12 +11,15 @@
 
 use std::collections::HashMap;
 
-use nislock_kbd::{Keyboard, Renderer, Screen, StatusKind};
+use nislock_kbd::{Frame, Keyboard, Renderer, Screen};
 use smithay_client_toolkit::session_lock::SessionLockSurface;
 use smithay_client_toolkit::shm::Shm;
-use smithay_client_toolkit::shm::slot::SlotPool;
+use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use wayland_client::backend::ObjectId;
-use wayland_client::{Proxy, protocol::wl_shm};
+use wayland_client::{
+    Proxy,
+    protocol::{wl_shm, wl_surface},
+};
 
 use crate::model::LockModel;
 
@@ -32,7 +35,7 @@ struct LockSurface {
     /// Last buffer handed to the compositor; SlotPool gives us its canvas
     /// back once the compositor releases it (double-buffered otherwise a new
     /// buffer is created).
-    current: Option<smithay_client_toolkit::shm::slot::Buffer>,
+    current: Option<Buffer>,
 }
 
 pub struct Views {
@@ -66,6 +69,14 @@ impl Views {
     /// True once at least one surface has a configured size to draw into.
     pub fn has_configured_surfaces(&self) -> bool {
         !self.lock_surfaces.is_empty()
+    }
+
+    /// Whether this Wayland surface is one of our lock surfaces, pending or
+    /// configured. The keyboard handlers use this to accept physical key
+    /// input only when one of our surfaces has keyboard focus.
+    pub fn has_surface(&self, surface: &wl_surface::WlSurface) -> bool {
+        let id = surface.id();
+        self.pending_locks.contains_key(&id) || self.lock_surfaces.contains_key(&id)
     }
 
     /// A surface was (re-)configured with a size: (re-)allocate its shm pool.
@@ -118,79 +129,18 @@ impl Views {
     /// Repaint every live surface; dead surfaces are dropped (with their
     /// pools) so hot-plug cycles do not leak memfd mappings.
     pub fn draw_all(&mut self, keyboard: &mut Keyboard, model: &LockModel) {
-        let ids: Vec<_> = self.lock_surfaces.keys().cloned().collect();
-        for id in ids {
-            let Some(mut ls) = self.lock_surfaces.remove(&id) else {
-                continue;
-            };
-            if !ls.surface.wl_surface().is_alive() {
-                // The compositor destroyed this surface; dropping the pool
-                // munmaps its memfd regions so hot-plug cycles do not leak.
-                continue;
+        let Self {
+            lock_surfaces,
+            renderer,
+            ..
+        } = self;
+        lock_surfaces.retain(|_, ls| {
+            let alive = ls.surface.wl_surface().is_alive();
+            if alive {
+                draw_surface(renderer, ls, keyboard, model);
             }
-            self.draw_surface(&mut ls, keyboard, model);
-            self.lock_surfaces.insert(id, ls);
-        }
-    }
-
-    fn draw_surface(&self, ls: &mut LockSurface, keyboard: &mut Keyboard, model: &LockModel) {
-        let stride = ls.width as usize * 4;
-        let mut painted = false;
-        if let Some(buf) = ls.current.as_ref()
-            && let Some(canvas) = ls.pool.canvas(buf)
-        {
-            self.paint(canvas, ls.width, ls.height, stride, keyboard, model);
-            painted = true;
-        }
-        if !painted {
-            match ls.pool.create_buffer(
-                ls.width as i32,
-                ls.height as i32,
-                stride as i32,
-                wl_shm::Format::Xrgb8888,
-            ) {
-                Ok((buf, canvas)) => {
-                    self.paint(canvas, ls.width, ls.height, stride, keyboard, model);
-                    ls.current = Some(buf);
-                    painted = true;
-                }
-                Err(e) => eprintln!("nislock: shm create_buffer failed: {e}"),
-            }
-        }
-        if painted && let Some(buf) = ls.current.as_ref() {
-            let wl = ls.surface.wl_surface();
-            if let Err(e) = buf.attach_to(wl) {
-                eprintln!("nislock: attach failed: {e}");
-                return;
-            }
-            wl.damage(0, 0, ls.width as i32, ls.height as i32);
-            wl.commit();
-        }
-    }
-
-    fn paint(
-        &self,
-        pixels: &mut [u8],
-        width: u32,
-        height: u32,
-        stride: usize,
-        keyboard: &mut Keyboard,
-        model: &LockModel,
-    ) {
-        let mut frame = nislock_kbd::Frame {
-            pixels,
-            width,
-            height,
-            stride: stride as u32,
-        };
-        let screen = Screen {
-            title: TITLE,
-            user: &model.user,
-            status: &model.status,
-            status_kind: model.status_kind,
-            hint: HINT,
-        };
-        self.renderer.draw(keyboard, &mut frame, &screen);
+            alive
+        });
     }
 }
 
@@ -200,5 +150,75 @@ impl Default for Views {
     }
 }
 
-// Keep the re-exported kind reachable for status comparisons in this module.
-const _: StatusKind = StatusKind::Idle;
+fn draw_surface(
+    renderer: &Renderer,
+    ls: &mut LockSurface,
+    keyboard: &mut Keyboard,
+    model: &LockModel,
+) {
+    let (width, height) = (ls.width, ls.height);
+    let stride = width as usize * 4;
+
+    // Repaint the previous buffer if the compositor has released it;
+    // otherwise allocate a fresh one.
+    let repainted = match ls.current.as_ref().and_then(|buf| ls.pool.canvas(buf)) {
+        Some(canvas) => {
+            paint(renderer, canvas, width, height, stride, keyboard, model);
+            true
+        }
+        None => false,
+    };
+    if !repainted {
+        match ls.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride as i32,
+            wl_shm::Format::Xrgb8888,
+        ) {
+            Ok((buf, canvas)) => {
+                paint(renderer, canvas, width, height, stride, keyboard, model);
+                ls.current = Some(buf);
+            }
+            Err(e) => {
+                eprintln!("nislock: shm create_buffer failed: {e}");
+                return;
+            }
+        }
+    }
+
+    let Some(buf) = ls.current.as_ref() else {
+        return;
+    };
+    let wl = ls.surface.wl_surface();
+    if let Err(e) = buf.attach_to(wl) {
+        eprintln!("nislock: attach failed: {e}");
+        return;
+    }
+    wl.damage(0, 0, width as i32, height as i32);
+    wl.commit();
+}
+
+fn paint(
+    renderer: &Renderer,
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    keyboard: &mut Keyboard,
+    model: &LockModel,
+) {
+    let mut frame = Frame {
+        pixels,
+        width,
+        height,
+        stride: stride as u32,
+    };
+    let screen = Screen {
+        title: TITLE,
+        user: &model.user,
+        status: &model.status,
+        status_kind: model.status_kind,
+        hint: HINT,
+    };
+    renderer.draw(keyboard, &mut frame, &screen);
+}

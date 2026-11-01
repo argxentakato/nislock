@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
 
-//! nislock — ext-session-lock-v1 locker driven by the Steam Deck gamepad.
+//! nislock — ext-session-lock-v1 locker driven by the Steam Deck gamepad,
+//! with any physical Wayland keyboard typing directly into the field.
 //!
 //! Behavior (unchanged across the refactor): the D-pad moves a cursor over an
 //! on-screen keyboard, A pushes a key into the password buffer, B pops, Start
 //! submits (L4/R4 hold-to-run keys), and a correct password authenticates via
-//! PAM then unlock-and-exits with code 0. If the compositor ends the lock, we
-//! exit 1; startup/protocol failures print a rendered report and exit FAILURE.
+//! PAM then unlock-and-exits with code 0. A connected physical keyboard adds
+//! characters directly while a lock surface has focus (see [`app`]'s
+//! `physical_key_events`); it never moves the on-screen cursor. If the
+//! compositor ends the lock, we exit 1; startup/protocol failures print a
+//! rendered report and exit FAILURE.
 //! SIGUSR1 requests an unlock-and-exit, like swaylock/hyprlock.
 //! The authenticated account comes from the real UID, and the PAM service
 //! is fixed; neither can be selected through a configuration file or an

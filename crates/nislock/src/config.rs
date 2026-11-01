@@ -47,13 +47,9 @@ mod tests {
             .map_err(|err| err.to_string())
     }
 
-    fn current_username() -> Option<String> {
-        uzers::get_current_username().map(|name| name.to_string_lossy().into_owned())
-    }
-
     #[test]
     fn authenticates_the_real_uid_account() {
-        match current_username() {
+        match real_user_name() {
             Some(name) => assert_eq!(resolve().unwrap(), name),
             None => assert!(resolve().is_err()),
         }
@@ -71,14 +67,14 @@ mod tests {
     fn historical_environment_variables_stay_ignored() {
         const CHILD_MARKER: &str = "NISLOCK_TEST_ENV_CHILD";
         if std::env::var_os(CHILD_MARKER).is_some() {
-            match current_username() {
+            match real_user_name() {
                 Some(name) => assert_eq!(resolve().unwrap(), name),
                 None => assert!(resolve().is_err()),
             }
             return;
         }
 
-        let invalid_user = format!("{}-nislock-invalid", current_username().unwrap_or_default());
+        let invalid_user = format!("{}-nislock-invalid", real_user_name().unwrap_or_default());
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
