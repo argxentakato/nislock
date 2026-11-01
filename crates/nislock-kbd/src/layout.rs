@@ -7,7 +7,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Insert a character (shifted variant used while shift is latched).
-    Char { base: char, shifted: char },
+    Char {
+        base: char,
+        shifted: char,
+    },
     /// Insert a fixed character regardless of shift state.
     Fixed(char),
     Space,
@@ -40,9 +43,9 @@ pub struct Layer {
 
 impl Layer {
     pub fn find(&self, x: f32, y: f32) -> Option<usize> {
-        self.keys.iter().position(|k| {
-            x >= k.x && x < k.x + k.w && y >= k.y && y < k.y + k.h
-        })
+        self.keys
+            .iter()
+            .position(|k| x >= k.x && x < k.x + k.w && y >= k.y && y < k.y + k.h)
     }
 }
 
@@ -105,9 +108,23 @@ fn row(chars: &[&str], y: f32, indent: f32) -> Vec<Key> {
 fn alpha_layer() -> Layer {
     let cols = 10.0f32;
     let mut keys = Vec::new();
-    keys.extend(row(&["qQ", "wW", "eE", "rR", "tT", "yY", "uU", "iI", "oO", "pP"], 0.0, 0.0));
-    keys.extend(row(&["aA", "sS", "dD", "fF", "gG", "hH", "jJ", "kK", "lL"], 1.0, 0.5));
-    keys.push(Key { x: 0.0, y: 2.0, w: 1.5, h: 1.0, action: Action::Shift });
+    keys.extend(row(
+        &["qQ", "wW", "eE", "rR", "tT", "yY", "uU", "iI", "oO", "pP"],
+        0.0,
+        0.0,
+    ));
+    keys.extend(row(
+        &["aA", "sS", "dD", "fF", "gG", "hH", "jJ", "kK", "lL"],
+        1.0,
+        0.5,
+    ));
+    keys.push(Key {
+        x: 0.0,
+        y: 2.0,
+        w: 1.5,
+        h: 1.0,
+        action: Action::Shift,
+    });
     keys.extend(row(&["zZ", "xX", "cC", "vV", "bB", "nN", "mM"], 2.0, 1.5));
     keys.push(Key {
         x: 8.5,
@@ -117,23 +134,34 @@ fn alpha_layer() -> Layer {
         action: Action::Backspace,
     });
     control_row(&mut keys, cols, 3.0);
-    Layer { name: "abc", cols, rows: 4.0, keys }
+    Layer {
+        name: "abc",
+        cols,
+        rows: 4.0,
+        keys,
+    }
 }
 
 fn symbols_layer() -> Layer {
     let cols = 10.0f32;
     let mut keys = Vec::new();
-    keys.extend(
-        row(&["1!", "2@", "3#", "4$", "5%", "6^", "7&", "8*", "9(", "0)"], 0.0, 0.0),
-    );
-    keys.extend(
-        row(
-            &["-_", "[{", "]}", "{|", ";:", "'\"", ",<", ".>", "/?"],
-            1.0,
-            0.0,
-        ),
-    );
-    keys.push(Key { x: 0.0, y: 2.0, w: 1.5, h: 1.0, action: Action::Layer(0) });
+    keys.extend(row(
+        &["1!", "2@", "3#", "4$", "5%", "6^", "7&", "8*", "9(", "0)"],
+        0.0,
+        0.0,
+    ));
+    keys.extend(row(
+        &["-_", "[{", "]}", "{|", ";:", "'\"", ",<", ".>", "/?"],
+        1.0,
+        0.0,
+    ));
+    keys.push(Key {
+        x: 0.0,
+        y: 2.0,
+        w: 1.5,
+        h: 1.0,
+        action: Action::Layer(0),
+    });
     keys.extend(row(&["`~", "\\|", "<+", ">=", "#≠", "$€", "*‡"], 2.0, 1.5));
     keys.push(Key {
         x: 8.5,
@@ -143,17 +171,18 @@ fn symbols_layer() -> Layer {
         action: Action::Backspace,
     });
     control_row(&mut keys, cols, 3.0);
-    Layer { name: "?123", cols, rows: 4.0, keys }
+    Layer {
+        name: "?123",
+        cols,
+        rows: 4.0,
+        keys,
+    }
 }
 
 fn numpad_layer() -> Layer {
     let cols = 6.0f32;
     let mut keys = Vec::new();
-    let grid = [
-        ["7&", "8*", "9("],
-        ["4$", "5%", "6^"],
-        ["1!", "2@", "3#"],
-    ];
+    let grid = [["7&", "8*", "9("], ["4$", "5%", "6^"], ["1!", "2@", "3#"]];
     for (r, line) in grid.iter().enumerate() {
         keys.extend(row(line, r as f32, 1.0));
     }
@@ -164,13 +193,46 @@ fn numpad_layer() -> Layer {
             y: r as f32,
             w: 2.0,
             h: 1.0,
-            action: if r == 3 { Action::Submit } else { Action::Backspace },
+            action: if r == 3 {
+                Action::Submit
+            } else {
+                Action::Backspace
+            },
         });
     }
     // First column: layer access + cancel stacked via control-style keys.
-    keys.push(Key { x: 0.0, y: 0.0, w: 1.0, h: 1.0, action: Action::Layer(0) });
-    keys.push(Key { x: 0.0, y: 1.0, w: 1.0, h: 1.0, action: Action::Layer(1) });
-    keys.push(Key { x: 0.0, y: 2.0, w: 1.0, h: 1.0, action: Action::Layer(2) });
-    keys.push(Key { x: 0.0, y: 3.0, w: 1.0, h: 1.0, action: Action::Cancel });
-    Layer { name: "num", cols, rows: 4.0, keys }
+    keys.push(Key {
+        x: 0.0,
+        y: 0.0,
+        w: 1.0,
+        h: 1.0,
+        action: Action::Layer(0),
+    });
+    keys.push(Key {
+        x: 0.0,
+        y: 1.0,
+        w: 1.0,
+        h: 1.0,
+        action: Action::Layer(1),
+    });
+    keys.push(Key {
+        x: 0.0,
+        y: 2.0,
+        w: 1.0,
+        h: 1.0,
+        action: Action::Layer(2),
+    });
+    keys.push(Key {
+        x: 0.0,
+        y: 3.0,
+        w: 1.0,
+        h: 1.0,
+        action: Action::Cancel,
+    });
+    Layer {
+        name: "num",
+        cols,
+        rows: 4.0,
+        keys,
+    }
 }

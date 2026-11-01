@@ -47,7 +47,10 @@ pub enum Event {
     /// Direct cancel shortcut (Select button).
     Cancel,
     /// Absolute pointer position, normalized 0..1 within the frame.
-    Pointer { x: f32, y: f32 },
+    Pointer {
+        x: f32,
+        y: f32,
+    },
     /// Click/tap at the last pointer position.
     Click,
     /// A character typed on a physical keyboard, appended verbatim.
@@ -204,9 +207,7 @@ impl Keyboard {
 
     fn char_for(&self, action: Action) -> Option<char> {
         match action {
-            Action::Char { base, shifted } => {
-                Some(if self.shift { shifted } else { base })
-            }
+            Action::Char { base, shifted } => Some(if self.shift { shifted } else { base }),
             Action::Fixed(c) => Some(c),
             Action::Space => Some(' '),
             _ => None,
@@ -342,7 +343,11 @@ impl Keyboard {
             })
             .collect();
         self.focus = self.focus.min(keys.len().saturating_sub(1));
-        self.scene = Scene { keys, field: Some(field), unit: scale };
+        self.scene = Scene {
+            keys,
+            field: Some(field),
+            unit: scale,
+        };
         self.last_size = (width, height);
     }
 
@@ -372,7 +377,11 @@ fn label_for(key: &Key, shift: bool) -> String {
         Action::Submit => "unlock".into(),
         Action::Cancel => "cancel".into(),
         Action::Shift => {
-            if shift { "shift ON".into() } else { "shift".into() }
+            if shift {
+                "shift ON".into()
+            } else {
+                "shift".into()
+            }
         }
         Action::Layer(_) => "sym".into(),
     }
@@ -394,7 +403,10 @@ mod tests {
         assert!(!kb.scene.keys.is_empty());
         for k in &kb.scene.keys {
             assert!(k.x >= -0.01 && k.y >= -0.01, "key off-screen: {k:?}");
-            assert!(k.x + k.w <= 1280.01 && k.y + k.h <= 800.01, "key clipped: {k:?}");
+            assert!(
+                k.x + k.w <= 1280.01 && k.y + k.h <= 800.01,
+                "key clipped: {k:?}"
+            );
         }
         assert!(kb.scene.field.is_some());
     }
@@ -498,7 +510,10 @@ mod tests {
         let action = k.action;
         let nx = (k.x + k.w / 2.0) / 1280.0;
         let ny = (k.y + k.h / 2.0) / 800.0;
-        assert!(matches!(kb.handle(Event::Pointer { x: nx, y: ny }), Effect::Redraw));
+        assert!(matches!(
+            kb.handle(Event::Pointer { x: nx, y: ny }),
+            Effect::Redraw
+        ));
         assert_eq!(kb.focus_index(), idx);
         let before = kb.buffer_text().to_string();
         kb.handle(Event::Click);

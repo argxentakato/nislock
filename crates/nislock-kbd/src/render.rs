@@ -54,18 +54,42 @@ struct Glyph {
 mod theme {
     use tiny_skia::Color;
     // from_rgba8 is not const in tiny-skia 0.11, so these are inline fns.
-    pub fn bg() -> Color { Color::from_rgba8(16, 18, 27, 255) }
-    pub fn key() -> Color { Color::from_rgba8(45, 50, 66, 255) }
-    pub fn key_alt() -> Color { Color::from_rgba8(36, 40, 54, 255) }
-    pub fn key_focus() -> Color { Color::from_rgba8(122, 162, 247, 255) }
-    pub fn key_active() -> Color { Color::from_rgba8(63, 72, 96, 255) }
-    pub fn label() -> Color { Color::from_rgba8(198, 204, 220, 255) }
-    pub fn label_dim() -> Color { Color::from_rgba8(126, 134, 154, 255) }
-    pub fn field() -> Color { Color::from_rgba8(24, 26, 38, 255) }
-    pub fn error() -> Color { Color::from_rgba8(247, 118, 142, 255) }
-    pub fn info() -> Color { Color::from_rgba8(176, 183, 200, 255) }
-    pub fn accent() -> Color { Color::from_rgba8(122, 162, 247, 255) }
-    pub fn white() -> Color { Color::from_rgba8(255, 255, 255, 255) }
+    pub fn bg() -> Color {
+        Color::from_rgba8(16, 18, 27, 255)
+    }
+    pub fn key() -> Color {
+        Color::from_rgba8(45, 50, 66, 255)
+    }
+    pub fn key_alt() -> Color {
+        Color::from_rgba8(36, 40, 54, 255)
+    }
+    pub fn key_focus() -> Color {
+        Color::from_rgba8(122, 162, 247, 255)
+    }
+    pub fn key_active() -> Color {
+        Color::from_rgba8(63, 72, 96, 255)
+    }
+    pub fn label() -> Color {
+        Color::from_rgba8(198, 204, 220, 255)
+    }
+    pub fn label_dim() -> Color {
+        Color::from_rgba8(126, 134, 154, 255)
+    }
+    pub fn field() -> Color {
+        Color::from_rgba8(24, 26, 38, 255)
+    }
+    pub fn error() -> Color {
+        Color::from_rgba8(247, 118, 142, 255)
+    }
+    pub fn info() -> Color {
+        Color::from_rgba8(176, 183, 200, 255)
+    }
+    pub fn accent() -> Color {
+        Color::from_rgba8(122, 162, 247, 255)
+    }
+    pub fn white() -> Color {
+        Color::from_rgba8(255, 255, 255, 255)
+    }
 }
 
 fn color_rgb(c: Color) -> u32 {
@@ -88,9 +112,14 @@ impl Renderer {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, KbdError> {
-        let font = Font::from_bytes(bytes, FontSettings::default())
-            .map_err(|e| KbdError::FontLoad { message: e.to_string() })?;
-        Ok(Self { font, cache: RefCell::new(HashMap::new()) })
+        let font =
+            Font::from_bytes(bytes, FontSettings::default()).map_err(|e| KbdError::FontLoad {
+                message: e.to_string(),
+            })?;
+        Ok(Self {
+            font,
+            cache: RefCell::new(HashMap::new()),
+        })
     }
 
     fn glyph(&self, c: char, size: u32, tint: Color) -> Rc<Glyph> {
@@ -123,12 +152,16 @@ impl Renderer {
             top: metrics.ymin + h as i32,
             advance: metrics.advance_width,
         });
-        self.cache.borrow_mut().insert((c, size, rgb), Rc::clone(&g));
+        self.cache
+            .borrow_mut()
+            .insert((c, size, rgb), Rc::clone(&g));
         g
     }
 
     fn text_width(&self, s: &str, size: u32) -> f32 {
-        s.chars().map(|c| self.glyph(c, size, theme::white()).advance).sum()
+        s.chars()
+            .map(|c| self.glyph(c, size, theme::white()).advance)
+            .sum()
     }
 
     fn draw_text(&self, pm: &mut Pixmap, s: &str, size: u32, x: f32, baseline: f32, color: Color) {
@@ -163,7 +196,14 @@ impl Renderer {
         pb.line_to(x + w - r, y);
         pb.cubic_to(x + w - r + r * k, y, x + w, y + r - r * k, x + w, y + r);
         pb.line_to(x + w, y + h - r);
-        pb.cubic_to(x + w, y + h - r + r * k, x + w - r + r * k, y + h, x + w - r, y + h);
+        pb.cubic_to(
+            x + w,
+            y + h - r + r * k,
+            x + w - r + r * k,
+            y + h,
+            x + w - r,
+            y + h,
+        );
         pb.line_to(x + r, y + h);
         pb.cubic_to(x + r - r * k, y + h, x, y + h - r + r * k, x, y + h - r);
         pb.line_to(x, y + r);
@@ -173,7 +213,13 @@ impl Renderer {
         let mut paint = Paint::default();
         paint.set_color(fill);
         paint.anti_alias = true;
-        pm.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::default(), None);
+        pm.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::default(),
+            None,
+        );
     }
 
     fn fill_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, fill: Color) {
@@ -183,7 +229,13 @@ impl Renderer {
         let mut paint = Paint::default();
         paint.set_color(fill);
         paint.anti_alias = true;
-        pm.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::default(), None);
+        pm.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::default(),
+            None,
+        );
     }
 
     /// Paint the whole screen (top band + keyboard) into `frame`.
@@ -339,8 +391,12 @@ mod tests {
         let mut buf1 = vec![0u8; 640 * 400 * 4];
         let mut buf2 = vec![0u8; (660 * 400) * 4]; // wider stride than width
         {
-            let mut frame =
-                Frame { pixels: &mut buf1, width: 640, height: 400, stride: 640 * 4 };
+            let mut frame = Frame {
+                pixels: &mut buf1,
+                width: 640,
+                height: 400,
+                stride: 640 * 4,
+            };
             let screen = Screen {
                 title: "nislock",
                 user: "deck",
@@ -351,8 +407,12 @@ mod tests {
             r.draw(&mut kb, &mut frame, &screen);
         }
         {
-            let mut frame =
-                Frame { pixels: &mut buf2, width: 640, height: 400, stride: 660 * 4 };
+            let mut frame = Frame {
+                pixels: &mut buf2,
+                width: 640,
+                height: 400,
+                stride: 660 * 4,
+            };
             let screen = Screen {
                 title: "nislock",
                 user: "deck",
@@ -384,11 +444,24 @@ mod tests {
             status_kind: StatusKind::Error,
             hint: "A: select",
         };
-        for (w, h) in [(1, 1), (7, 3), (320, 200), (1280, 800), (1876, 1098), (3840, 2160), (800, 1280), (4000, 60)] {
+        for (w, h) in [
+            (1, 1),
+            (7, 3),
+            (320, 200),
+            (1280, 800),
+            (1876, 1098),
+            (3840, 2160),
+            (800, 1280),
+            (4000, 60),
+        ] {
             let mut kb = Keyboard::new();
             let mut buf = vec![0u8; w * h * 4];
-            let mut frame =
-                Frame { pixels: &mut buf, width: w as u32, height: h as u32, stride: (w * 4) as u32 };
+            let mut frame = Frame {
+                pixels: &mut buf,
+                width: w as u32,
+                height: h as u32,
+                stride: (w * 4) as u32,
+            };
             r.draw(&mut kb, &mut frame, &screen);
         }
     }

@@ -140,7 +140,9 @@ MODALIAS=hid:b0003g0103v000028DEp00001205\n\
 HID_ID=0003:000028DE:00001205\n";
         assert!(uevent_matches_deck(uevent));
         // no trailing newline
-        assert!(uevent_matches_deck(b"MODALIAS=hid:b0003g0103v000028DEp00001205"));
+        assert!(uevent_matches_deck(
+            b"MODALIAS=hid:b0003g0103v000028DEp00001205"
+        ));
     }
 
     #[test]
@@ -150,6 +152,8 @@ HID_ID=0003:000028DE:00001205\n";
             b"MODALIAS=hid:b0003g0000v000028DEp00001142\n"
         ));
         assert!(!uevent_matches_deck(b"MODALIAS=usb:v28DEp1205d0001dc00\n"));
-        assert!(!uevent_matches_deck(b"MAJOR=242\nMINOR=1\nDEVNAME=hidraw0\n"));
+        assert!(!uevent_matches_deck(
+            b"MAJOR=242\nMINOR=1\nDEVNAME=hidraw0\n"
+        ));
     }
 }

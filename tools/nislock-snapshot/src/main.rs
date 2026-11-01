@@ -77,11 +77,15 @@ fn write_png(path: &str, w: usize, h: usize, bgrx: &[u8]) {
 
     let mut png = Vec::new();
     png.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
-    chunk(&mut png, b"IHDR", &[
-        &(w as u32).to_be_bytes(),
-        &(h as u32).to_be_bytes(),
-        &[8, 2, 0, 0, 0],
-    ]);
+    chunk(
+        &mut png,
+        b"IHDR",
+        &[
+            &(w as u32).to_be_bytes(),
+            &(h as u32).to_be_bytes(),
+            &[8, 2, 0, 0, 0],
+        ],
+    );
 
     // zlib stream with uncompressed deflate blocks
     let mut deflate = vec![0x78, 0x01];
@@ -139,6 +143,9 @@ mod tests {
     fn png_end_chunk_has_standard_crc() {
         let mut output = Vec::new();
         chunk(&mut output, b"IEND", &[]);
-        assert_eq!(output, [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]);
+        assert_eq!(
+            output,
+            [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]
+        );
     }
 }

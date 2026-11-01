@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use deckhid::{Frame, buttons};
 pub use error::InputError;
-pub use nislock_kbd::{Dir, Event};
 use nislock_kbd::Dir::{Down, Left, Right, Up};
+pub use nislock_kbd::{Dir, Event};
 
 pub use deckhid::find_deck_hidraw;
 
@@ -30,7 +30,7 @@ const MAX_REOPEN_DELAY: Duration = Duration::from_secs(5);
 /// Button/stick state needed to translate raw reports into widget events.
 #[derive(Default)]
 pub struct GamepadState {
-    prev_buttons: u64, // for rising-edge detection on the button bitmask
+    prev_buttons: u64,    // for rising-edge detection on the button bitmask
     stick_nav: [bool; 4], // edge latch for left/up/right/down from the stick
 }
 
@@ -160,7 +160,11 @@ mod tests {
     use super::*;
 
     fn frame(buttons: u64, lx: i16, ly: i16) -> Frame {
-        Frame { buttons, lthumb_x: lx, lthumb_y: ly }
+        Frame {
+            buttons,
+            lthumb_x: lx,
+            lthumb_y: ly,
+        }
     }
 
     #[test]
@@ -176,12 +180,24 @@ mod tests {
     #[test]
     fn face_button_mapping_matches_plan() {
         let mut s = GamepadState::default();
-        assert_eq!(s.process(&frame(buttons::X, 0, 0)), vec![Event::ToggleShift]);
-        assert_eq!(s.process(&frame(buttons::Y, 0, 0)), vec![Event::TextInput(' ')]);
+        assert_eq!(
+            s.process(&frame(buttons::X, 0, 0)),
+            vec![Event::ToggleShift]
+        );
+        assert_eq!(
+            s.process(&frame(buttons::Y, 0, 0)),
+            vec![Event::TextInput(' ')]
+        );
         assert_eq!(s.process(&frame(buttons::L1, 0, 0)), vec![Event::PrevLayer]);
         assert_eq!(s.process(&frame(buttons::R1, 0, 0)), vec![Event::NextLayer]);
-        assert_eq!(s.process(&frame(buttons::VIEW, 0, 0)), vec![Event::PrevLayer]);
-        assert_eq!(s.process(&frame(buttons::OPTIONS, 0, 0)), vec![Event::Submit]);
+        assert_eq!(
+            s.process(&frame(buttons::VIEW, 0, 0)),
+            vec![Event::PrevLayer]
+        );
+        assert_eq!(
+            s.process(&frame(buttons::OPTIONS, 0, 0)),
+            vec![Event::Submit]
+        );
         assert_eq!(s.process(&frame(buttons::STEAM, 0, 0)), vec![Event::Cancel]);
     }
 
@@ -189,9 +205,18 @@ mod tests {
     fn dpad_and_touch_l4_r4_navigate() {
         let mut s = GamepadState::default();
         assert_eq!(s.process(&frame(buttons::D_UP, 0, 0)), vec![Event::Nav(Up)]);
-        assert_eq!(s.process(&frame(buttons::D_DOWN, 0, 0)), vec![Event::Nav(Down)]);
-        assert_eq!(s.process(&frame(buttons::D_LEFT, 0, 0)), vec![Event::Nav(Left)]);
-        assert_eq!(s.process(&frame(buttons::D_RIGHT, 0, 0)), vec![Event::Nav(Right)]);
+        assert_eq!(
+            s.process(&frame(buttons::D_DOWN, 0, 0)),
+            vec![Event::Nav(Down)]
+        );
+        assert_eq!(
+            s.process(&frame(buttons::D_LEFT, 0, 0)),
+            vec![Event::Nav(Left)]
+        );
+        assert_eq!(
+            s.process(&frame(buttons::D_RIGHT, 0, 0)),
+            vec![Event::Nav(Right)]
+        );
         assert_eq!(s.process(&frame(buttons::L4, 0, 0)), vec![Event::Nav(Up)]);
         assert_eq!(s.process(&frame(buttons::R4, 0, 0)), vec![Event::Nav(Down)]);
     }
