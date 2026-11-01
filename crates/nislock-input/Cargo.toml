@@ -2,8 +2,8 @@
 name = "nislock-input"
 description = "Steam Deck controller hidraw backend producing nislock-kbd events"
 version.workspace = true
-authors.workspace = true
 edition.workspace = true
+repository.workspace = true
 license.workspace = true
 
 [dependencies]

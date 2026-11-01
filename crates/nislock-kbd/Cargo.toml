@@ -4,6 +4,7 @@ description = "Controller-driven on-screen keyboard widget (backend-agnostic, re
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+repository.workspace = true
 license.workspace = true
 
 [dependencies]

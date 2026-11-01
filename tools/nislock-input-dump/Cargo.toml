@@ -4,6 +4,7 @@ description = "Print raw Steam Deck input reports and mapped widget events (dev 
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+repository.workspace = true
 license.workspace = true
 publish = false
 

@@ -4,6 +4,7 @@ description = "Render the nislock lock screen to a PNG without a Wayland display
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+repository.workspace = true
 license.workspace = true
 publish = false
 

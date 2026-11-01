@@ -4,6 +4,7 @@ description = "ext-session-lock-v1 locker with a controller-driven on-screen key
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+repository.workspace = true
 license.workspace = true
 
 [dependencies]
