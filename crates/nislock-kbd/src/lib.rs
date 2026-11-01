@@ -1,11 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 //! Backend-agnostic on-screen keyboard: layout, input state machine, and painting.
 //!
 //! The widget only knows abstract [`Event`]s and abstract [`Effect`]s so the same
 //! code can drive a Wayland locker, an SDDM overlay, or an initrd framebuffer.
 
+pub mod error;
 mod layout;
 mod render;
 
+pub use error::KbdError;
 pub use layout::{Action, Key, Layer, default_layout};
 
 /// A point in layout coordinate space (grid units before scaling).
@@ -489,14 +494,15 @@ mod tests {
         let mut kb = laid_out();
         // pick an arbitrary key in the middle of the scene and click its center
         let idx = kb.scene.keys.len() / 2;
-        let k = kb.scene.keys[idx].clone();
+        let k = &kb.scene.keys[idx];
+        let action = k.action;
         let nx = (k.x + k.w / 2.0) / 1280.0;
         let ny = (k.y + k.h / 2.0) / 800.0;
         assert!(matches!(kb.handle(Event::Pointer { x: nx, y: ny }), Effect::Redraw));
         assert_eq!(kb.focus_index(), idx);
         let before = kb.buffer_text().to_string();
         kb.handle(Event::Click);
-        if let Action::Char { base, .. } = k.action {
+        if let Action::Char { base, .. } = action {
             assert_eq!(kb.buffer_text(), format!("{before}{base}"));
         }
     }

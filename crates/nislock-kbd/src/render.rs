@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 //! Painting: draws the keyboard into an XRGB8888 frame using tiny-skia + fontdue.
 //! Software rendering only, so the same code can later target wl_shm, DRM dumb
 //! buffers, or an initrd framebuffer without GPU access.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use fontdue::{Font, FontSettings};
 use tiny_skia::{
@@ -11,6 +15,7 @@ use tiny_skia::{
 };
 
 use crate::Keyboard;
+use crate::error::KbdError;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/IBMPlexSans-Regular.ttf");
 
@@ -73,7 +78,7 @@ fn color_rgb(c: Color) -> u32 {
 pub struct Renderer {
     font: Font,
     // Cache key: (char, pixel size, tint rgb) — only a few tints occur per screen.
-    cache: RefCell<HashMap<(char, u32, u32), Glyph>>,
+    cache: RefCell<HashMap<(char, u32, u32), Rc<Glyph>>>,
 }
 
 impl Renderer {
@@ -82,20 +87,16 @@ impl Renderer {
         Self::from_bytes(FONT_BYTES).expect("embedded font must load")
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let font = Font::from_bytes(bytes, FontSettings::default()).map_err(|e| e.to_string())?;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, KbdError> {
+        let font = Font::from_bytes(bytes, FontSettings::default())
+            .map_err(|e| KbdError::FontLoad { message: e.to_string() })?;
         Ok(Self { font, cache: RefCell::new(HashMap::new()) })
     }
 
-    fn glyph(&self, c: char, size: u32, tint: Color) -> Glyph {
+    fn glyph(&self, c: char, size: u32, tint: Color) -> Rc<Glyph> {
         let rgb = color_rgb(tint);
         if let Some(g) = self.cache.borrow().get(&(c, size, rgb)) {
-            return Glyph {
-                pixmap: g.pixmap.clone(),
-                left: g.left,
-                top: g.top,
-                advance: g.advance,
-            };
+            return Rc::clone(g);
         }
         let (metrics, bitmap) = self.font.rasterize(c, size as f32);
         let (w, h) = (metrics.width, metrics.height);
@@ -115,22 +116,14 @@ impl Renderer {
                 px[o + 3] = *cov;
             }
         }
-        let g = Glyph {
+        let g = Rc::new(Glyph {
             pixmap: pm,
             left: metrics.xmin,
             // top edge above the baseline in font-up coords
             top: metrics.ymin + h as i32,
             advance: metrics.advance_width,
-        };
-        self.cache.borrow_mut().insert(
-            (c, size, rgb),
-            Glyph {
-                pixmap: g.pixmap.clone(),
-                left: g.left,
-                top: g.top,
-                advance: g.advance,
-            },
-        );
+        });
+        self.cache.borrow_mut().insert((c, size, rgb), Rc::clone(&g));
         g
     }
 

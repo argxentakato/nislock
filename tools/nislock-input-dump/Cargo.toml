@@ -1,0 +1,15 @@
+[package]
+name = "nislock-input-dump"
+description = "Print raw Steam Deck input reports and mapped widget events (dev tool, not shipped)"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "nislock-input-dump"
+path = "src/main.rs"
+
+[dependencies]
+nislock-input.workspace = true

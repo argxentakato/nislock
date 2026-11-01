@@ -7,10 +7,17 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-calloop = { workspace = true, features = ["signals"] }
+calloop = { version = "0.13", features = ["signals"] }
 nislock-input.workspace = true
 nislock-kbd.workspace = true
-smithay-client-toolkit.workspace = true
-wayland-client.workspace = true
+smithay-client-toolkit = { version = "0.19", features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
 zeroize.workspace = true
-pam.workspace = true
+pam = "0.7"
+uzers = "0.12"
+thiserror.workspace = true
+miette = { version = "7", features = ["fancy"] }
+clap = { version = "4.6", features = ["derive", "cargo", "unicode", "wrap_help", "string"] }
+
+[build-dependencies]
+clap_mangen = "0.3.3"

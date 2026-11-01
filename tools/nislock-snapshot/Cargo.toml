@@ -1,0 +1,15 @@
+[package]
+name = "nislock-snapshot"
+description = "Render the nislock lock screen to a PNG without a Wayland display (dev tool, not shipped)"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "nislock-snapshot"
+path = "src/main.rs"
+
+[dependencies]
+nislock-kbd.workspace = true

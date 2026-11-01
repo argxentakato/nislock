@@ -1,4 +1,9 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 //! Debug tool: print raw Deck input reports and mapped widget events.
+//!
+//! `cargo run -p nislock-input-dump`
 
 use std::io::Read;
 

@@ -39,12 +39,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Run `nislock` inside a Wayland session whose compositor supports `ext-session-lock-v1`. It reads the Steam Deck controller directly through `hidraw`, so the user needs read/write access to the `hid-steam` hidraw node.
 
-| Variable | Purpose |
-| --- | --- |
-| `NISLOCK_USER` | User to authenticate (default: `$USER`, then `deck`) |
-| `NISLOCK_PAM_SERVICE` | PAM service name (default: `login`) |
-
-Sending `SIGUSR1` to the process unlocks and exits, like `swaylock`/`hyprlock`.
+Sending `SIGUSR1` to the process unlocks and exits.
 
 ## License
 

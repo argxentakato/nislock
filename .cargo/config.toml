@@ -1,0 +1,3 @@
+[alias]
+dev-snapshot = "run -p nislock-snapshot --"
+dev-input-dump = "run -p nislock-input-dump"

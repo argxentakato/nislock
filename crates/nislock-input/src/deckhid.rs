@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 // Portions of this file are derived from the `deckhidraw` crate v0.0.0
 // (upstream 0BSD, Copyright (c) 2026 R <rqou@berkeley.edu>,
 // https://github.com/ArcaneNibble/deckhidraw). Used here as a subset with
 // modifications: frame-layout constants, button bits, and sysfs matching.
+
 //! Steam Deck control-interface hidraw: device discovery + raw input reports.
 //!
 //! The kernel `hid-steam` driver exposes a virtual HID client device
@@ -11,7 +15,6 @@
 //! gamepad interfaces (they come back when it is closed). This works
 //! regardless of the `lizard_mode` module parameter, unlike reading evdev.
 
-use std::io;
 use std::path::{Path, PathBuf};
 
 /// Length of one raw input report from the control interface.
@@ -99,8 +102,7 @@ fn uevent_matches_deck(uevent: &[u8]) -> bool {
 
 /// Find the `/dev/hidraw<N>` node of the Deck control interface, or `None`
 /// when the Deck controller is not present.
-pub fn find_deck_hidraw() -> io::Result<Option<PathBuf>> {
-    let mut found = None;
+pub fn find_deck_hidraw() -> Result<Option<PathBuf>, crate::error::InputError> {
     for entry in std::fs::read_dir("/sys/class/hidraw")? {
         let entry = entry?;
         let uevent_path = entry.path().join("device/uevent");
@@ -108,11 +110,10 @@ pub fn find_deck_hidraw() -> io::Result<Option<PathBuf>> {
             continue;
         };
         if uevent_matches_deck(&uevent) {
-            found = Some(Path::new("/dev").join(entry.file_name()));
-            break;
+            return Ok(Some(Path::new("/dev").join(entry.file_name())));
         }
     }
-    Ok(found)
+    Ok(None)
 }
 
 #[cfg(test)]

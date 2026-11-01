@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026 nislock contributors
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 //! Renders the lock screen to a PNG without a Wayland display.
 //!
-//! `cargo run -p nislock-kbd --example snapshot -- out.png`
-//! The PNG encoder is deliberately minimal (stored deflate blocks) so the
-//! example needs no extra dependencies.
+//! `cargo run -p nislock-snapshot -- [out.png] [--dump-scene]`
 
 use nislock_kbd::Dir;
 use nislock_kbd::Event;
@@ -15,8 +14,12 @@ use nislock_kbd::Screen;
 use nislock_kbd::StatusKind;
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let dump_scene = args.iter().any(|a| a == "--dump-scene");
+    let path = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .cloned()
         .unwrap_or_else(|| "nislock-snapshot.png".to_string());
     let (w, h) = (1280usize, 800usize);
 
@@ -50,7 +53,7 @@ fn main() {
     write_png(&path, w, h, &px);
     println!("wrote {path}");
 
-    if std::env::args().any(|a| a == "--dump-scene") {
+    if dump_scene {
         for k in kb.scene().keys.iter() {
             println!(
                 "scene {:.1},{:.1} {:.1}x{:.1} {:?} label={:?}",
@@ -99,8 +102,8 @@ fn write_png(path: &str, w: usize, h: usize, bgrx: &[u8]) {
 fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], parts: &[&[u8]]) {
     let len: usize = parts.iter().map(|p| p.len()).sum();
     out.extend_from_slice(&(len as u32).to_be_bytes());
-    out.extend_from_slice(kind);
     let mut body = Vec::with_capacity(len + 4);
+    body.extend_from_slice(kind);
     for p in parts {
         body.extend_from_slice(p);
     }
@@ -126,4 +129,16 @@ fn adler32(data: &[u8]) -> u32 {
         b = (b + a) % 65_521;
     }
     (b << 16) | a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chunk;
+
+    #[test]
+    fn png_end_chunk_has_standard_crc() {
+        let mut output = Vec::new();
+        chunk(&mut output, b"IEND", &[]);
+        assert_eq!(output, [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]);
+    }
 }

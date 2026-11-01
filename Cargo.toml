@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "tools/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,14 +11,8 @@ license = "AGPL-3.0-only"
 [workspace.dependencies]
 nislock-kbd = { path = "crates/nislock-kbd" }
 nislock-input = { path = "crates/nislock-input" }
-tiny-skia = "0.11"
-fontdue = "0.9"
 zeroize = { version = "1", features = ["alloc"] }
-libc = "0.2"
-calloop = "0.13"
-smithay-client-toolkit = { version = "0.19", features = ["calloop", "xkbcommon"] }
-wayland-client = "0.31"
-pam = "0.7"
+thiserror = "2"
 
 [profile.dev.package."*"]
 opt-level = 3

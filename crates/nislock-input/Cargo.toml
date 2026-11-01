@@ -8,7 +8,4 @@ license.workspace = true
 
 [dependencies]
 nislock-kbd.workspace = true
-
-[[bin]]
-name = "nislock-input-dump"
-path = "src/bin/dump.rs"
+thiserror.workspace = true

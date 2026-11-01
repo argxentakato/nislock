@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 //! Key layout definitions in abstract grid units; rendering scales them to pixels.
 
 /// What a key does when pressed.

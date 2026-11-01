@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Unuaviro F. Argxentakato <unuaviro@argxentakato.me>
+
 //! Steam Deck controller → `nislock_kbd::Event` mapping.
 //!
 //! We read the raw 64-byte input reports from the `hid-steam` control
@@ -6,13 +9,16 @@
 //! module parameter, and no other client can consume the events underneath us.
 
 pub mod deckhid;
+pub mod error;
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::Read;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use deckhid::{Frame, buttons};
+pub use error::InputError;
 pub use nislock_kbd::{Dir, Event};
 use nislock_kbd::Dir::{Down, Left, Right, Up};
 
@@ -99,17 +105,14 @@ impl GamepadState {
 /// Open the Deck control hidraw and stream mapped events to `tx` from a
 /// dedicated reader thread. Reports keep flowing while the node is open, and
 /// close/reopen by the kernel around us is survived with a bounded backoff.
-pub fn spawn_deck_reader(tx: Sender<Event>) -> io::Result<ReaderHandle> {
-    let path = find_deck_hidraw()?.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "no Steam Deck hidraw control interface found")
-    })?;
-    let file = File::open(&path)?;
+pub fn spawn_deck_reader(tx: Sender<Event>) -> Result<ReaderHandle, InputError> {
+    let path: PathBuf = find_deck_hidraw()?.ok_or(InputError::DeviceNotFound)?;
+    let mut file = File::open(&path)?;
     std::thread::Builder::new()
         .name("nislock-gamepad".into())
         .spawn(move || {
             let mut state = GamepadState::default();
             let mut buf = [0u8; deckhid::REPORT_LEN];
-            let mut file = file;
             loop {
                 match file.read(&mut buf) {
                     Ok(n) if n == buf.len() => {
@@ -144,6 +147,7 @@ pub fn spawn_deck_reader(tx: Sender<Event>) -> io::Result<ReaderHandle> {
                 }
             }
         })
+        .map_err(InputError::Io)
         .map(|_| ReaderHandle)
 }
 
