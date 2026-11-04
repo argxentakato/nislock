@@ -10,7 +10,7 @@ pub mod error;
 mod layout;
 mod render;
 
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub use error::KbdError;
 pub use layout::{Action, Key, Layer, default_layout};
@@ -107,6 +107,7 @@ pub struct Keyboard {
     pointer: Option<(f32, f32)>,
     scene: Scene,
     last_size: (u32, u32),
+    scene_state: Option<(usize, bool)>,
 }
 
 impl Default for Keyboard {
@@ -127,11 +128,15 @@ impl Keyboard {
             pointer: None,
             scene: Scene::default(),
             last_size: (0, 0),
+            scene_state: None,
         }
     }
 
     /// Feed a normalized input event; returns an effect the backend must act on.
     pub fn handle(&mut self, ev: Event) -> Effect {
+        if self.last_size.0 != 0 && self.last_size.1 != 0 {
+            self.layout_pass(self.last_size.0, self.last_size.1);
+        }
         match ev {
             Event::Nav(dir) => {
                 self.nearest_focus(dir);
@@ -170,7 +175,7 @@ impl Keyboard {
                 } else if c == '\r' || c == '\n' {
                     return self.submit();
                 } else if c == ' ' || !c.is_control() {
-                    self.buffer.push(c);
+                    self.push(c);
                 } else {
                     return Effect::Noop;
                 }
@@ -192,7 +197,7 @@ impl Keyboard {
     }
 
     pub fn clear(&mut self) {
-        self.buffer.clear();
+        self.buffer.zeroize();
         self.shift = false;
         self.focus = 0;
     }
@@ -205,7 +210,20 @@ impl Keyboard {
     }
 
     fn pop(&mut self) {
-        self.buffer.pop();
+        if let Some(start) = zeroize_last_char(&mut self.buffer) {
+            self.buffer.truncate(start);
+        }
+    }
+
+    fn push(&mut self, character: char) {
+        let needed = self.buffer.len() + character.len_utf8();
+        if needed > self.buffer.capacity() {
+            let capacity = needed.max(self.buffer.capacity().saturating_mul(2));
+            let mut replacement = Zeroizing::new(String::with_capacity(capacity));
+            replacement.push_str(&self.buffer);
+            self.buffer = replacement;
+        }
+        self.buffer.push(character);
     }
 
     fn submit(&mut self) -> Effect {
@@ -234,7 +252,7 @@ impl Keyboard {
 
     fn pressed(&mut self, action: Action) -> Effect {
         if let Some(c) = self.char_for(action) {
-            self.buffer.push(c);
+            self.push(c);
             self.shift = false;
             return Effect::Redraw;
         }
@@ -318,9 +336,9 @@ impl Keyboard {
         }
     }
 
-    /// Compute pixel geometry for the given frame size; cached until size changes.
+    /// Compute pixel geometry for the current frame size and keyboard state.
     pub(crate) fn layout_pass(&mut self, width: u32, height: u32) {
-        if self.last_size == (width, height) && !self.scene.keys.is_empty() {
+        if self.last_size == (width, height) && self.scene_state == Some((self.layer, self.shift)) {
             return;
         }
         let w = width as f32;
@@ -358,6 +376,7 @@ impl Keyboard {
             unit: scale,
         };
         self.last_size = (width, height);
+        self.scene_state = Some((self.layer, self.shift));
     }
 
     /// Current pixel geometry of the last layout pass (empty until first draw
@@ -369,6 +388,12 @@ impl Keyboard {
     pub(crate) fn buffer_text(&self) -> &str {
         &self.buffer
     }
+}
+
+fn zeroize_last_char(text: &mut str) -> Option<usize> {
+    let start = text.char_indices().next_back()?.0;
+    text[start..].zeroize();
+    Some(start)
 }
 
 fn label_for(key: &Key, shift: bool) -> String {
@@ -446,6 +471,38 @@ mod tests {
     }
 
     #[test]
+    fn last_character_is_zeroized_before_truncation() {
+        let mut text = String::from("aæ");
+        let start = zeroize_last_char(&mut text).unwrap();
+        assert_eq!(text.as_bytes(), b"a\0\0");
+        text.truncate(start);
+        assert_eq!(text, "a");
+        assert_eq!(zeroize_last_char(&mut text), Some(0));
+        assert_eq!(text.as_bytes(), b"\0");
+        text.clear();
+        assert_eq!(zeroize_last_char(&mut text), None);
+    }
+
+    #[test]
+    fn buffer_supports_growth_deletion_and_clear() {
+        let mut kb = Keyboard::new();
+        for character in "passwordæ🔒".repeat(16).chars() {
+            kb.handle(Event::TextInput(character));
+        }
+        kb.handle(Event::Backspace);
+        assert_eq!(
+            kb.buffer_text(),
+            format!("{}passwordæ", "passwordæ🔒".repeat(15))
+        );
+        kb.handle(Event::TextInput('!'));
+        assert!(kb.buffer_text().ends_with("æ!"));
+        kb.clear();
+        assert!(kb.buffer_text().is_empty());
+        kb.handle(Event::TextInput('x'));
+        assert_eq!(kb.buffer_text(), "x");
+    }
+
+    #[test]
     fn pressing_focused_char_key_types_it() {
         let mut kb = laid_out();
         // focus starts at key 0 of the first layer
@@ -508,6 +565,61 @@ mod tests {
         }
         kb.handle(Event::PrevLayer);
         assert_eq!(kb.active_layer(), 0);
+    }
+
+    #[test]
+    fn layer_switch_updates_scene_and_input_before_redraw() {
+        let mut kb = laid_out();
+        kb.handle(Event::NextLayer);
+        kb.layout_pass(1280, 800);
+        assert_eq!(kb.scene.keys[0].action, kb.layers[1].keys[0].action);
+        kb.handle(Event::Press);
+        assert_eq!(kb.buffer_text(), "1");
+
+        kb.handle(Event::NextLayer);
+        kb.handle(Event::Nav(Dir::Right));
+        assert_eq!(kb.scene.keys.len(), kb.layers[2].keys.len());
+        kb.handle(Event::Press);
+        assert_eq!(kb.buffer_text(), "18");
+    }
+
+    #[test]
+    fn shift_label_tracks_state_at_same_size() {
+        let mut kb = laid_out();
+        kb.handle(Event::ToggleShift);
+        kb.layout_pass(1280, 800);
+        assert!(kb.scene.keys.iter().any(|key| key.label == "shift ON"));
+        kb.handle(Event::Press);
+        kb.layout_pass(1280, 800);
+        assert!(kb.scene.keys.iter().any(|key| key.label == "shift"));
+    }
+
+    #[test]
+    fn layer_switch_updates_pointer_geometry_before_redraw() {
+        let mut kb = laid_out();
+        kb.handle(Event::NextLayer);
+        kb.handle(Event::NextLayer);
+        kb.handle(Event::Nav(Dir::Right));
+        let key = &kb.scene.keys[0];
+        let x = (key.x + key.w / 2.0) / 1280.0;
+        let y = (key.y + key.h / 2.0) / 800.0;
+        kb.handle(Event::Pointer { x, y });
+        kb.handle(Event::Click);
+        assert_eq!(kb.buffer_text(), "7");
+        kb.layout_pass(640, 400);
+        assert_eq!(kb.last_size, (640, 400));
+        assert_eq!(kb.scene.keys[0].action, kb.layers[2].keys[0].action);
+    }
+
+    #[test]
+    fn clearing_shift_updates_scene() {
+        let mut kb = laid_out();
+        kb.handle(Event::ToggleShift);
+        kb.layout_pass(1280, 800);
+        kb.clear();
+        kb.layout_pass(1280, 800);
+        assert!(kb.scene.keys.iter().any(|key| key.label == "shift"));
+        assert!(!kb.scene.keys.iter().any(|key| key.label == "shift ON"));
     }
 
     #[test]

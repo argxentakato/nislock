@@ -37,7 +37,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Usage
 
-Run `nislock` inside a Wayland session whose compositor supports `ext-session-lock-v1`. It reads the Steam Deck controller directly through `hidraw`, so the user needs read/write access to the `hid-steam` hidraw node.
+Run `nislock` inside a Wayland session whose compositor supports `ext-session-lock-v1`. It reads the Steam Deck controller directly through `hidraw`, so the user needs read/write access to the `hid-steam` hidraw node. While that node is open it also keeps the Deck's keyboard/mouse emulation (lizard mode) disabled so physical buttons are not typed as keys; the emulation is re-enabled when nislock unlocks, and any exit that skips that (a signal, an abort, power loss) leaves it to the Deck's firmware watchdog a few seconds later.
 
 Sending `SIGUSR1` to the process unlocks and exits.
 

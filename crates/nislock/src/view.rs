@@ -10,6 +10,7 @@
 //! It never decides *what* the state means; the Controller/Model do.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 
 use nislock_kbd::{Frame, Keyboard, Renderer, Screen};
 use smithay_client_toolkit::session_lock::SessionLockSurface;
@@ -38,11 +39,55 @@ struct LockSurface {
     current: Option<Buffer>,
 }
 
+struct SurfaceOutputs<Id> {
+    by_surface: HashMap<Id, Id>,
+}
+
+impl<Id> Default for SurfaceOutputs<Id> {
+    fn default() -> Self {
+        Self {
+            by_surface: HashMap::new(),
+        }
+    }
+}
+
+impl<Id: Eq + Hash> SurfaceOutputs<Id> {
+    fn insert(&mut self, surface: Id, output: Id) {
+        self.by_surface.insert(surface, output);
+    }
+
+    fn contains(&self, surface: &Id) -> bool {
+        self.by_surface.contains_key(surface)
+    }
+
+    fn remove_surface(&mut self, surface: &Id) {
+        self.by_surface.remove(surface);
+    }
+
+    fn remove_output<Pending, Configured>(
+        &mut self,
+        output: &Id,
+        pending: &mut HashMap<Id, Pending>,
+        configured: &mut HashMap<Id, Configured>,
+    ) {
+        self.by_surface.retain(|surface, associated_output| {
+            if associated_output == output {
+                pending.remove(surface);
+                configured.remove(surface);
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
 pub struct Views {
     /// Surfaces created at lock/hot-plug time, waiting for their first
     /// configure event (which carries the size we need for shm buffers).
     pending_locks: HashMap<ObjectId, SessionLockSurface>,
     lock_surfaces: HashMap<ObjectId, LockSurface>,
+    surface_outputs: SurfaceOutputs<ObjectId>,
     renderer: Renderer,
 }
 
@@ -51,19 +96,29 @@ impl Views {
         Self {
             pending_locks: HashMap::new(),
             lock_surfaces: HashMap::new(),
+            surface_outputs: SurfaceOutputs::default(),
             renderer: Renderer::embedded(),
         }
     }
 
     /// Track a freshly created lock surface until it is configured.
-    pub fn track_pending(&mut self, lock_surface: SessionLockSurface) {
-        self.pending_locks
-            .insert(lock_surface.wl_surface().id(), lock_surface);
+    pub fn track_pending(&mut self, output: ObjectId, lock_surface: SessionLockSurface) {
+        let id = lock_surface.wl_surface().id();
+        self.surface_outputs.insert(id.clone(), output);
+        self.pending_locks.insert(id, lock_surface);
     }
 
     /// Drop a pending placeholder (configured, or its output went away).
-    pub fn clear_pending(&mut self, id: &ObjectId) {
+    fn clear_pending(&mut self, id: &ObjectId) {
         self.pending_locks.remove(id);
+    }
+
+    pub fn remove_output(&mut self, output: &ObjectId) {
+        self.surface_outputs.remove_output(
+            output,
+            &mut self.pending_locks,
+            &mut self.lock_surfaces,
+        );
     }
 
     /// True once at least one surface has a configured size to draw into.
@@ -89,6 +144,9 @@ impl Views {
         height: u32,
     ) -> bool {
         let id = surface.wl_surface().id();
+        if !self.surface_outputs.contains(&id) {
+            return false;
+        }
         // Configured now; drop the waiting placeholder so the map does not
         // hold destroyed surfaces across lock cycles.
         self.clear_pending(&id);
@@ -103,6 +161,7 @@ impl Views {
                 Err(e) => {
                     eprintln!("nislock: cannot re-allocate shm pool: {e}");
                     self.lock_surfaces.remove(&id);
+                    self.surface_outputs.remove_surface(&id);
                     return false;
                 }
             };
@@ -120,7 +179,11 @@ impl Views {
                         },
                     );
                 }
-                Err(e) => eprintln!("nislock: cannot allocate shm pool: {e}"),
+                Err(e) => {
+                    eprintln!("nislock: cannot allocate shm pool: {e}");
+                    self.surface_outputs.remove_surface(&id);
+                    return false;
+                }
             }
         }
         true
@@ -131,13 +194,16 @@ impl Views {
     pub fn draw_all(&mut self, keyboard: &mut Keyboard, model: &LockModel) {
         let Self {
             lock_surfaces,
+            surface_outputs,
             renderer,
             ..
         } = self;
-        lock_surfaces.retain(|_, ls| {
+        lock_surfaces.retain(|id, ls| {
             let alive = ls.surface.wl_surface().is_alive();
             if alive {
                 draw_surface(renderer, ls, keyboard, model);
+            } else {
+                surface_outputs.remove_surface(id);
             }
             alive
         });
@@ -221,4 +287,34 @@ fn paint(
         hint: HINT,
     };
     renderer.draw(keyboard, &mut frame, &screen);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::SurfaceOutputs;
+
+    #[test]
+    fn removing_an_output_only_removes_its_surfaces() {
+        let mut outputs = SurfaceOutputs::default();
+        outputs.insert(1, 10);
+        outputs.insert(2, 10);
+        outputs.insert(3, 20);
+        let mut pending = HashMap::from([(1, "pending"), (3, "other")]);
+        let mut configured = HashMap::from([(2, "configured")]);
+        outputs.remove_output(&10, &mut pending, &mut configured);
+        assert!(!outputs.contains(&1));
+        assert!(!outputs.contains(&2));
+        assert!(outputs.contains(&3));
+        assert_eq!(pending, HashMap::from([(3, "other")]));
+        assert!(configured.is_empty());
+        outputs.insert(4, 10);
+        pending.insert(4, "reconnected");
+        assert!(outputs.contains(&4));
+        outputs.remove_output(&10, &mut pending, &mut configured);
+        assert!(!outputs.contains(&4));
+        assert!(!pending.contains_key(&4));
+        assert!(outputs.contains(&3));
+    }
 }

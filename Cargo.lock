@@ -624,6 +624,7 @@ dependencies = [
 name = "nislock-input"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nislock-kbd",
  "thiserror 2.0.21",
 ]

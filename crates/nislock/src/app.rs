@@ -17,7 +17,7 @@ use std::time::Duration;
 use calloop::channel::{self, Channel};
 use calloop::signals::{Signal, Signals};
 use calloop::{EventLoop, LoopHandle};
-use nislock_input::spawn_deck_reader;
+use nislock_input::{ReaderHandle, spawn_deck_reader};
 use nislock_kbd::{Event as KbdEvent, Keyboard};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -59,6 +59,7 @@ pub struct App {
     shm: Shm,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
+    lock_lifecycle: LockLifecycle,
     loop_handle: LoopHandle<'static, App>,
     /// Physical keyboards, keyed by seat object id; one per seat that offers
     /// the keyboard capability.
@@ -69,6 +70,43 @@ pub struct App {
     controller: LockController,
     dirty: bool,
     exit: Option<i32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LockLifecycle {
+    Pending(Option<i32>),
+    Locked,
+    Ended,
+}
+
+impl LockLifecycle {
+    fn request_unlock(&mut self, code: i32) -> Option<i32> {
+        match self {
+            Self::Pending(request) => {
+                request.get_or_insert(code);
+                None
+            }
+            Self::Locked => {
+                *self = Self::Ended;
+                Some(code)
+            }
+            Self::Ended => None,
+        }
+    }
+
+    fn locked(&mut self) -> Option<i32> {
+        match std::mem::replace(self, Self::Ended) {
+            Self::Pending(Some(code)) => Some(code),
+            Self::Pending(None) => {
+                *self = Self::Locked;
+                None
+            }
+            state => {
+                *self = state;
+                None
+            }
+        }
+    }
 }
 
 /// A physical keyboard from one seat: the protocol object, plus which of our
@@ -83,11 +121,16 @@ struct SeatKeyboard {
 pub struct Runtime<'a> {
     event_loop: EventLoop<'a, App>,
     app: App,
+    // declared last so it drops last: the gamepad reader (and its lizard-mode
+    // disable) must outlive the loop that consumes its events
+    _pad: ReaderHandle,
 }
 
 impl Runtime<'_> {
     pub fn run(&mut self) -> Result<i32, NisError> {
-        let Runtime { event_loop, app } = self;
+        let Runtime {
+            event_loop, app, ..
+        } = self;
         while app.exit.is_none() {
             if let Err(e) = event_loop.dispatch(Duration::from_millis(50), app) {
                 eprintln!("nislock: event loop error: {e}");
@@ -140,7 +183,7 @@ pub fn bootstrap(config: &Config) -> Result<Runtime<'static>, NisError> {
     // Deck gamepad: hidraw reader thread -> std mpsc -> calloop channel.
     // Opened before requesting the lock so a missing pad fails cleanly, not as a crashed locker.
     let (pad_tx, pad_rx) = mpsc::channel();
-    let _pad = spawn_deck_reader(pad_tx)?;
+    let pad = spawn_deck_reader(pad_tx)?;
     let (cal_tx, cal_rx): (channel::Sender<KbdEvent>, Channel<KbdEvent>) = channel::channel();
     std::thread::spawn(move || bridge_gamepad_events(pad_rx, cal_tx));
     event_loop
@@ -161,6 +204,7 @@ pub fn bootstrap(config: &Config) -> Result<Runtime<'static>, NisError> {
         shm,
         session_lock_state,
         session_lock: None,
+        lock_lifecycle: LockLifecycle::Pending(None),
         loop_handle,
         keyboards: HashMap::new(),
         views: Views::new(),
@@ -181,7 +225,11 @@ pub fn bootstrap(config: &Config) -> Result<Runtime<'static>, NisError> {
         .insert(event_loop.handle())
         .map_err(|e| NisError::WaylandRegistration(e.error))?;
 
-    Ok(Runtime { event_loop, app })
+    Ok(Runtime {
+        event_loop,
+        app,
+        _pad: pad,
+    })
 }
 
 impl App {
@@ -221,6 +269,12 @@ impl App {
 
     /// Send unlock (when still locked), flush it, then terminate.
     fn unlock_and_exit(&mut self, code: i32) {
+        if let Some(code) = self.lock_lifecycle.request_unlock(code) {
+            self.finish_unlock(code);
+        }
+    }
+
+    fn finish_unlock(&mut self, code: i32) {
         if let Some(lock) = self.session_lock.take()
             && lock.is_locked()
         {
@@ -271,15 +325,20 @@ fn physical_key_events(event: &KeyEvent, repeat: bool) -> Vec<KbdEvent> {
 
 impl SessionLockHandler for App {
     fn locked(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, lock: SessionLock) {
+        if let Some(code) = self.lock_lifecycle.locked() {
+            self.finish_unlock(code);
+            return;
+        }
         for output in self.output_state.outputs() {
             let surface = self.compositor_state.create_surface(qh);
             let lock_surface = lock.create_lock_surface(surface, &output, qh);
-            self.views.track_pending(lock_surface);
+            self.views.track_pending(output.id(), lock_surface);
         }
     }
 
     fn finished(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
         // The compositor ended the lock (external unlock, or a failed lock).
+        self.lock_lifecycle = LockLifecycle::Ended;
         self.exit.get_or_insert(1);
     }
 
@@ -292,7 +351,7 @@ impl SessionLockHandler for App {
         _serial: u32,
     ) {
         let (width, height) = configure.new_size;
-        self.dirty = self
+        self.dirty |= self
             .views
             .surface_configured(&self.shm, surface, width, height);
     }
@@ -360,7 +419,7 @@ impl OutputHandler for App {
         if let Some(lock) = self.session_lock.as_ref().filter(|l| l.is_locked()) {
             let surface = self.compositor_state.create_surface(qh);
             let lock_surface = lock.create_lock_surface(surface, &output, qh);
-            self.views.track_pending(lock_surface);
+            self.views.track_pending(output.id(), lock_surface);
         }
     }
 
@@ -379,7 +438,7 @@ impl OutputHandler for App {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        self.views.clear_pending(&output.id());
+        self.views.remove_output(&output.id());
     }
 }
 
@@ -539,6 +598,34 @@ wayland_client::delegate_noop!(App: ignore wl_buffer::WlBuffer);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlock_waits_for_lock_and_only_fires_once() {
+        let mut lifecycle = LockLifecycle::Pending(None);
+        assert_eq!(lifecycle.request_unlock(0), None);
+        assert_eq!(lifecycle.request_unlock(1), None);
+        assert_eq!(lifecycle.locked(), Some(0));
+        assert_eq!(lifecycle.request_unlock(0), None);
+        assert_eq!(lifecycle.locked(), None);
+    }
+
+    #[test]
+    fn established_lock_unlocks_immediately() {
+        let mut lifecycle = LockLifecycle::Pending(None);
+        assert_eq!(lifecycle.locked(), None);
+        assert_eq!(lifecycle, LockLifecycle::Locked);
+        assert_eq!(lifecycle.request_unlock(0), Some(0));
+        assert_eq!(lifecycle.request_unlock(0), None);
+    }
+
+    #[test]
+    fn finished_lock_discards_pending_unlock() {
+        let mut lifecycle = LockLifecycle::Pending(None);
+        assert_eq!(lifecycle.request_unlock(0), None);
+        lifecycle = LockLifecycle::Ended;
+        assert_eq!(lifecycle.locked(), None);
+        assert_eq!(lifecycle.request_unlock(0), None);
+    }
 
     fn key_event(keysym: u32, utf8: Option<&str>) -> KeyEvent {
         KeyEvent {

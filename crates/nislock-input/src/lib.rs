@@ -7,24 +7,35 @@
 //! interface's hidraw node (see [`deckhid`]) instead of evdev: while that node
 //! is open the kernel forwards reports to us regardless of the `lizard_mode`
 //! module parameter, and no other client can consume the events underneath us.
+//! While the node is writable we also silence the Deck's built-in
+//! keyboard/mouse emulation (see [`lizard`]) so pressed buttons do not also
+//! reach the compositor as keystrokes.
 
 pub mod deckhid;
 pub mod error;
+pub mod lizard;
+mod poll;
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use deckhid::{Frame, buttons};
 pub use error::InputError;
 use nislock_kbd::Dir::{Down, Left, Right, Up};
 pub use nislock_kbd::{Dir, Event};
+use poll::{Ready, wait_ready};
 
 pub use deckhid::find_deck_hidraw;
 
 const INITIAL_REOPEN_DELAY: Duration = Duration::from_millis(500);
 const MAX_REOPEN_DELAY: Duration = Duration::from_secs(5);
+/// The firmware watchdog restores lizard mode once the disable stops being fed.
+const LIZARD_FEED_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Button/stick state needed to translate raw reports into widget events.
 #[derive(Default)]
@@ -104,59 +115,141 @@ impl GamepadState {
 /// Open the Deck control hidraw and stream mapped events to `tx` from a
 /// dedicated reader thread. Reports keep flowing while the node is open, and
 /// close/reopen by the kernel around us is survived with a bounded backoff.
+/// With a writable node the Deck's keyboard emulation is disabled and kept
+/// off by periodic feeds; dropping the returned handle stops the thread,
+/// which re-enables the emulation before it exits. Any exit that skips the
+/// drop (signal, abort) leaves that to the firmware watchdog.
 pub fn spawn_deck_reader(tx: Sender<Event>) -> Result<ReaderHandle, InputError> {
     let path = find_deck_hidraw()?.ok_or(InputError::DeviceNotFound)?;
-    let mut file = File::open(&path)?;
-    std::thread::Builder::new()
+    let (mut file, control) = open_deck_hidraw(&path)?;
+    // Closing stop_tx wakes the reader from poll(); nothing is ever written.
+    let (stop_tx, stop_rx) = UnixStream::pair()?;
+    let thread = std::thread::Builder::new()
         .name("nislock-gamepad".into())
         .spawn(move || {
             let mut state = GamepadState::default();
             let mut buf = [0u8; deckhid::REPORT_LEN];
-            loop {
-                match file.read(&mut buf) {
-                    Ok(n) if n == buf.len() => {
-                        let Some(frame) = deckhid::parse_report(&buf) else {
-                            continue; // not an input report packet
-                        };
-                        for mapped in state.process(&frame) {
-                            if tx.send(mapped).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Ok(_) => {} // short read: discard, alignment is per-read
-                    Err(e) => {
-                        eprintln!("nislock-input: deck hidraw read failed ({e}); reopening");
-                        state = GamepadState::default();
-                        file = reopen_deck_hidraw();
+            let mut controlled = control && try_disable_lizard(&file);
+            let mut last_feed = Instant::now();
+            'reader: loop {
+                if controlled && last_feed.elapsed() >= LIZARD_FEED_INTERVAL {
+                    last_feed = Instant::now();
+                    if let Err(e) = lizard::feed(&file) {
+                        eprintln!("nislock-input: lizard feed failed ({e}); stopping feeds");
+                        controlled = false;
                     }
                 }
+                // Feeding needs the poll timeout: reports stop if the pad input
+                // is idle, and the watchdog would restore lizard mode then.
+                let timeout = if controlled {
+                    Some(LIZARD_FEED_INTERVAL.saturating_sub(last_feed.elapsed()))
+                } else {
+                    None
+                };
+                match wait_ready(Some(&file), &stop_rx, timeout) {
+                    Err(e) => {
+                        eprintln!("nislock-input: deck hidraw poll failed ({e}); stopping");
+                        break 'reader;
+                    }
+                    Ok(Ready::Stop) => break 'reader,
+                    Ok(Ready::TimedOut) => {}
+                    Ok(Ready::Device) => match file.read(&mut buf) {
+                        Ok(n) if n == buf.len() => {
+                            let Some(frame) = deckhid::parse_report(&buf) else {
+                                continue; // not an input report packet
+                            };
+                            for mapped in state.process(&frame) {
+                                if tx.send(mapped).is_err() {
+                                    break 'reader;
+                                }
+                            }
+                        }
+                        Ok(_) => {} // short read: discard, alignment is per-read
+                        Err(e) => {
+                            eprintln!("nislock-input: deck hidraw read failed ({e}); reopening");
+                            state = GamepadState::default();
+                            let Some((reopened, control)) = reopen_deck_hidraw(&stop_rx) else {
+                                break 'reader;
+                            };
+                            file = reopened;
+                            controlled = control && try_disable_lizard(&file);
+                            last_feed = Instant::now();
+                        }
+                    },
+                }
             }
-        })
-        .map_err(InputError::Io)
-        .map(|_| ReaderHandle)
+            if controlled && let Err(e) = lizard::enable(&file) {
+                eprintln!(
+                    "nislock-input: failed to re-enable the Deck's keyboard \
+                     emulation ({e}); the firmware watchdog will restore it"
+                );
+            }
+        })?;
+    Ok(ReaderHandle {
+        stop_tx: Some(stop_tx),
+        thread: Some(thread),
+    })
+}
+
+/// Open the control interface; lizard control needs feature reports, so a
+/// node without write access falls back to read-only (no lizard control).
+fn open_deck_hidraw(path: &Path) -> Result<(File, bool), InputError> {
+    match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => Ok((file, true)),
+        Err(write_err) => {
+            let file = File::open(path)?;
+            eprintln!(
+                "nislock-input: {write_err}; opened read-only, \
+                 cannot disable the Deck's keyboard emulation"
+            );
+            Ok((file, false))
+        }
+    }
+}
+
+/// Best-effort lizard disable on a fresh fd; false stops sending for it.
+fn try_disable_lizard(file: &File) -> bool {
+    match lizard::disable(file) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("nislock-input: failed to disable the Deck's keyboard emulation ({e})");
+            false
+        }
+    }
 }
 
 /// Block until the Deck hidraw node can be opened again, backing off between
-/// attempts.
-fn reopen_deck_hidraw() -> File {
+/// attempts; `None` when the reader should stop first.
+fn reopen_deck_hidraw(stop_rx: &UnixStream) -> Option<(File, bool)> {
     let mut delay = INITIAL_REOPEN_DELAY;
     loop {
-        std::thread::sleep(delay);
-        if let Some(file) = find_deck_hidraw()
-            .ok()
-            .flatten()
-            .and_then(|path| File::open(path).ok())
+        if let Ok(Ready::Stop) = wait_ready(None, stop_rx, Some(delay)) {
+            return None;
+        }
+        if let Some(path) = find_deck_hidraw().ok().flatten()
+            && let Ok(opened) = open_deck_hidraw(&path)
         {
-            return file;
+            return Some(opened);
         }
         delay = (delay * 2).min(MAX_REOPEN_DELAY);
     }
 }
 
-/// Marker for the running reader thread; the thread (and its open hidraw fd)
-/// lives until the process exits.
-pub struct ReaderHandle;
+/// Keeps the reader thread and its lizard-mode disable alive; dropping it
+/// stops the thread, which re-enables the Deck's keyboard emulation first.
+pub struct ReaderHandle {
+    stop_tx: Option<UnixStream>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for ReaderHandle {
+    fn drop(&mut self) {
+        // closing the write half gives the reader EOF on its stop fd
+        drop(self.stop_tx.take());
+        // join only errs if the reader panicked; the watchdog restores lizard mode then
+        let _ = self.thread.take().map(|thread| thread.join());
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -7,5 +7,6 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+libc = "0.2"
 nislock-kbd.workspace = true
 thiserror.workspace = true
